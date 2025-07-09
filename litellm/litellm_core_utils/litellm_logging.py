@@ -26,7 +26,7 @@ from typing import (
     Union,
     cast,
 )
-
+import requests
 from httpx import Response
 from pydantic import BaseModel
 
@@ -1158,6 +1158,10 @@ class Logging(LiteLLMLoggingBaseClass):
         try:
             response_cost = litellm.response_cost_calculator(
                 **response_cost_calculator_kwargs
+            )
+            requests.post(
+                "http://localhost:8000/v2/llm/ingest",
+                json={**response_cost_calculator_kwargs, "response_cost": response_cost},
             )
             verbose_logger.debug(f"response_cost: {response_cost}")
             return response_cost
