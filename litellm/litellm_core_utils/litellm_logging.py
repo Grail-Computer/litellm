@@ -187,6 +187,15 @@ except Exception as e:
     PagerDutyAlerting = CustomLogger  # type: ignore
     EnterpriseCallbackControls = None  # type: ignore
     EnterpriseStandardLoggingPayloadSetupVAR = None
+
+# Redis imports
+try:
+    import redis
+    REDIS_AVAILABLE = True
+except ImportError:
+    REDIS_AVAILABLE = False
+    verbose_logger.debug("Redis not available - install redis package for Redis stream functionality")
+
 _in_memory_loggers: List[Any] = []
 
 ### GLOBAL VARIABLES ###
@@ -220,6 +229,45 @@ additional_details: Optional[Dict[str, str]] = {}
 local_cache: Optional[Dict[str, str]] = {}
 last_fetched_at = None
 last_fetched_at_keys = None
+
+# Redis configuration
+REDIS_URL = os.getenv("REDIS_URL")
+if REDIS_URL is None:
+    verbose_logger.debug("Redis URL not set, skipping Redis stream functionality")
+    REDIS_AVAILABLE = False
+
+STREAM_KEY = "llm-usage-ingest"
+_redis_client = None
+
+def get_redis_client():
+    """Get or create Redis client"""
+    global _redis_client
+    if _redis_client is None and REDIS_AVAILABLE:
+        try:
+            _redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+        except Exception as e:
+            verbose_logger.debug(f"Failed to initialize Redis client: {e}")
+            return None
+    return _redis_client
+
+def add_to_redis_stream(data: dict):
+    """Add data to Redis stream"""
+    if not REDIS_AVAILABLE:
+        verbose_logger.debug("Redis not available, skipping stream addition")
+        return None
+    
+    client = get_redis_client()
+    if client is None:
+        verbose_logger.debug("Redis client not available, skipping stream addition")
+        return None
+    
+    try:
+        msg_id = client.xadd(STREAM_KEY, {"d": json.dumps(data)}, id="*")
+        verbose_logger.debug(f"Added to Redis stream with ID: {msg_id}")
+        return msg_id
+    except Exception as e:
+        verbose_logger.debug(f"Failed to add to Redis stream: {e}")
+        return None
 
 
 ####
@@ -1159,9 +1207,8 @@ class Logging(LiteLLMLoggingBaseClass):
             response_cost = litellm.response_cost_calculator(
                 **response_cost_calculator_kwargs
             )
-            requests.post(
-                "http://localhost:8000/v2/llm/ingest",
-                json={**response_cost_calculator_kwargs, "response_cost": response_cost},
+            add_to_redis_stream(
+                {**result.model_dump(), "response_cost": response_cost, "metadata": self.model_call_details["litellm_params"].get("metadata", {})},
             )
             verbose_logger.debug(f"response_cost: {response_cost}")
             return response_cost
